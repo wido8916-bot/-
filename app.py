@@ -6,7 +6,7 @@ import io
 import os
 
 def change_pitch(waveform, semitones, sr=22050):
-    """수학적 리샘플링을 통해 오디오의 음높이를 조절하고, 길이를 고정합니다."""
+    """수학적 리샘플링을 통해 오디오의 음높이를 조절하고, 길이를 완벽히 고정합니다."""
     if semitones == 0:
         return waveform
     factor = 2 ** (semitones / 12.0)
@@ -14,12 +14,15 @@ def change_pitch(waveform, semitones, sr=22050):
     indices = indices[indices < len(waveform)]
     pitched = np.interp(indices, np.arange(len(waveform)), waveform)
     
-    # 🚨 [중요 추가] 음높이가 바뀌어도 원래 데이터 길이(3307개 등)로 강제 고정
+    # 🚨 더 안전하고 확실한 길이 고정 알고리즘
     target_len = len(waveform)
     if len(pitched) > target_len:
-        pitched = pitched[:target_len] # 길면 자르고
+        pitched = pitched[:target_len] # 길면 칼같이 자르기
     elif len(pitched) < target_len:
-        pitched = np.pad(pitched, (0, target_len - len(pitched)), 'constant') # 짧으면 무음으로 채움
+        # 짧으면 target_len 크기의 빈 배열을 만들고 앞부분에 쏙 집어넣기
+        padded = np.zeros(target_len)
+        padded[:len(pitched)] = pitched
+        pitched = padded
         
     return pitched
 

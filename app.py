@@ -6,14 +6,22 @@ import io
 import os
 
 def change_pitch(waveform, semitones, sr=22050):
-    """수학적 리샘플링을 통해 오디오의 음높이(Pitch)를 부드럽게 조절합니다."""
+    """수학적 리샘플링을 통해 오디오의 음높이를 조절하고, 길이를 고정합니다."""
     if semitones == 0:
         return waveform
     factor = 2 ** (semitones / 12.0)
-    # 선형 보간법을 이용해 주파수 길이를 조절함으로써 음고를 바꿈
     indices = np.arange(0, len(waveform), factor)
     indices = indices[indices < len(waveform)]
-    return np.interp(indices, np.arange(len(waveform)), waveform)
+    pitched = np.interp(indices, np.arange(len(waveform)), waveform)
+    
+    # 🚨 [중요 추가] 음높이가 바뀌어도 원래 데이터 길이(3307개 등)로 강제 고정
+    target_len = len(waveform)
+    if len(pitched) > target_len:
+        pitched = pitched[:target_len] # 길면 자르고
+    elif len(pitched) < target_len:
+        pitched = np.pad(pitched, (0, target_len - len(pitched)), 'constant') # 짧으면 무음으로 채움
+        
+    return pitched
 
 def apply_envelope_and_reverb(waveform, sr=22050, decay_rate=0.7):
     """소리에 부드러운 여운(A.D.S.R)과 공간감(Reverb)을 줍니다."""

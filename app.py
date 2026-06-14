@@ -6,14 +6,16 @@ import io
 import os
 
 def change_pitch(waveform, semitones, sr=22050):
-    """수학적 리샘플링을 통해 오디오의 음높이를 조절하고, 길이를 완벽히 고정합니다."""
-    if semitones == 0:
+    """음높이를 바꾸고 결과 길이를 원본과 완벽하게 일치시키는 안전한 함수"""
+    if semitones == 0 or len(waveform) == 0:
         return waveform
+    
     factor = 2 ** (semitones / 12.0)
     indices = np.arange(0, len(waveform), factor)
     indices = indices[indices < len(waveform)]
     pitched = np.interp(indices, np.arange(len(waveform)), waveform)
     
+    # 에러의 원인이 되는 길이를 무조건 원본 크기로 강제 고정
     target_len = len(waveform)
     if len(pitched) > target_len:
         pitched = pitched[:target_len]
@@ -21,22 +23,7 @@ def change_pitch(waveform, semitones, sr=22050):
         padded = np.zeros(target_len)
         padded[:len(pitched)] = pitched
         pitched = padded
-        
     return pitched
-
-def apply_envelope_and_reverb(waveform, sr=22050, decay_rate=0.7):
-    """소리에 부드러운 여운(A.D.S.R)과 공간감(Reverb)을 줍니다."""
-    n_samples = len(waveform)
-    envelope = np.exp(-decay_rate * np.linspace(0, 3, n_samples))
-    smoothed = waveform * envelope
-    
-    delay_samples = int(sr * 0.08)
-    reverb = np.zeros(n_samples + delay_samples)
-    reverb[:n_samples] += smoothed
-    reverb[delay_samples:] += smoothed * 0.35
-    reverb[delay_samples*2:] += smoothed * 0.15
-    
-    return reverb
 
 def decompose_text(text):
     double_jamo = {
@@ -77,7 +64,7 @@ for p in [mom_path, dad_path, me_path]:
     else:
         st.sidebar.error(f"❌ {p} 없음")
 
-input_text = st.text_input("연주할 문장을 입력하세요", "원재 사랑해")
+input_text = st.text_input("연주할 문장을 입력하세요", "사랑해")
 
 if st.button("음악으로 연주하기"):
     try:
@@ -86,34 +73,41 @@ if st.button("음악으로 연주하기"):
         me_base = np.load(me_path)
         
         sr = 22050
-        space_unit = np.zeros(int(sr * 0.4))
+        space_unit = np.zeros(int(sr * 0.3)) # 띄어쓰기는 0.3초 평화로운 무음
         decomposed_data = decompose_text(input_text)
         final_audio = []
 
-        for i, item in enumerate(decomposed_data):
+        for item in decomposed_data:
             if item == "SPACE":
                 final_audio.append(space_unit)
             else:
-                pitch_offset = (i % 3) * 2
-                
+                # 1. 초성 (엄마 목소리) -> 근음 (도, 0 반음)
                 for _ in item['초']:
-                    pitched = change_pitch(mom_base, 0 + pitch_offset, sr)
-                    final_audio.append(apply_envelope_and_reverb(pitched, sr))
+                    pitched = change_pitch(mom_base, 0, sr)
+                    final_audio.append(pitched)
+                
+                # 2. 중성 (아빠 목소리) -> 따뜻한 3도 화음 (미, +4 반음)
                 for _ in item['중']:
-                    pitched = change_pitch(dad_base, 4 + pitch_offset, sr)
-                    final_audio.append(apply_envelope_and_reverb(pitched, sr))
+                    pitched = change_pitch(dad_base, 4, sr)
+                    final_audio.append(pitched)
+                
+                # 3. 종성 (원재 목소리) -> 풍성한 5도 화음 (솔, +7 반음)
                 for _ in item['종']:
-                    pitched = change_pitch(me_base, 7 + pitch_offset, sr)
-                    final_audio.append(apply_envelope_and_reverb(pitched, sr))
+                    pitched = change_pitch(me_base, 7, sr)
+                    final_audio.append(pitched)
         
         if final_audio:
+            # 모든 소리 조각을 안전하게 일렬로 결합
             combined = np.concatenate(final_audio)
+            
+            # 볼륨 안정화 처리
             if np.max(np.abs(combined)) > 0:
                 combined = combined / np.max(np.abs(combined)) * 0.85
                 
             out_bio = io.BytesIO()
             sf.write(out_bio, combined, sr, format='WAV')
             st.audio(out_bio.getvalue())
-            st.success(f"'{input_text}' 음악 연주 완료!")
+            st.success(f"'{input_text}' 연주가 성공적으로 완료되었습니다!")
+            
     except Exception as e:
         st.error(f"오류가 발생했습니다: {e}")

@@ -51,9 +51,9 @@ st.title("👨‍👩‍👦 가족 목소리 합창 TTS")
 st.write("엄마(초성), 아빠(중성), 원재(종성)의 목소리로 글자를 연주합니다.")
 
 # 파일 경로 지정
-mom_path = "엄마_voice.wav"
-dad_path = "아빠_voice.wav"
-me_path = "원재_voice.wav"
+mom_path = "엄마_voice.m4a"
+dad_path = "아빠_voice.m4a"
+me_path = "원재_voice.m4a"
 
 # [진단 기능] 서버에 파일이 진짜 잘 존재하는지 화면에 표시
 st.sidebar.subheader("📁 서버 파일 연결 상태")

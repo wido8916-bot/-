@@ -5,7 +5,7 @@ from jamo import h2j, j2hcj
 import io
 import os
 
-# 1. 고정 스펙트럼 매핑
+# 1. 자음/모음 스펙트럼 매핑 (반음 단위)
 CONSONANT_SPECTRUM = {
     'ㄱ': 0, 'ㄴ': 1, 'ㄷ': 2, 'ㄹ': 3, 'ㅁ': 4, 'ㅂ': 5, 'ㅅ': 6,
     'ㅇ': 7, 'ㅈ': 8, 'ㅊ': 9, 'ㅋ': 10, 'ㅌ': 11, 'ㅍ': 12, 'ㅎ': 13
@@ -16,44 +16,50 @@ VOWEL_SPECTRUM = {
     'ㅛ': 5, 'ㅜ': 6, 'ㅠ': 7, 'ㅡ': 8, 'ㅣ': 9
 }
 
-def generate_pure_tone(base_waveform, semitones, duration, is_vowel=False, is_drum=False, sr=22050):
+def generate_glided_timeline(pitch_targets, base_waveform, is_vowel=False, sr=22050):
     """
-    지정된 duration만큼 끊김 없이 통째로 하나의 파형을 생성하는 함수.
-    시작과 끝에만 부드러운 페이딩을 주어 연속음일 때 중간이 끊기지 않게 합니다.
+    목소리 소스 위에서 목표 음정들(pitch_targets) 사이를 
+    부드러운 곡선(포르타멘토)을 그리며 이동하는 파형을 생성합니다.
     """
-    n_samples = int(sr * duration)
-    if len(base_waveform) == 0:
-        return np.zeros(n_samples)
+    # 전체 샘플 수 계산
+    total_samples = len(pitch_targets)
+    if total_samples == 0:
+        return np.zeros(0)
     
-    extended = np.tile(base_waveform, int(np.ceil(n_samples / len(base_waveform))))
-    trimmed = extended[:n_samples]
+    # 기본 음역대 축 설정
+    base_freq = 330.0 if is_vowel else 180.0
     
-    if is_drum:
-        # 종성 (원재 - 드럼): 타격음 성격 유지 (쿵- 소리 후 목소리 노이즈 감쇄)
-        t = np.linspace(0, duration, n_samples, endpoint=False)
-        low_thump = np.sin(2 * np.pi * 60 * t) * np.exp(-30 * t)
-        noise_burst = trimmed * np.exp(-25 * t)
-        return (low_thump * 0.7) + (noise_burst * 0.4)
+    # 주파수 곡선(타임라인) 생성
+    freq_timeline = np.zeros(total_samples)
+    current_freq = base_freq * (2 ** (pitch_targets[0] / 12.0))
+    
+    # ─── 곡선의 완만함(Glide Smoothness) 설정 ───
+    # 아빠(모음)는 훨씬 완만하게(0.0015), 엄마(자음)는 상대적으로 빠르게(0.006) 음이 이동함
+    gliding_speed = 0.0015 if is_vowel else 0.006
+    
+    for t in range(total_samples):
+        target_freq = base_freq * (2 ** (pitch_targets[t] / 12.0))
+        # 현재 주파수가 목표 주파수를 향해 곡선을 그리며 서서히 접근 (지수 감쇄 전이)
+        current_freq += (target_freq - current_freq) * gliding_speed
+        freq_timeline[t] = current_freq
         
-    # 선율 악기 (초성/중성)
-    base_freq = 440.0 if is_vowel else 220.0
-    freq = base_freq * (2 ** (semitones / 12.0))
-    t = np.linspace(0, duration, n_samples, endpoint=False)
+    # 주파수 타임라인을 기반으로 위상(Phase) 누적 연산
+    dt = 1.0 / sr
+    phases = np.cumsum(2 * np.pi * freq_timeline * dt)
+    source_signal = np.sin(phases)
     
-    if is_vowel:
-        source = np.sin(2 * np.pi * freq * t)
-    else:
-        # 초성 자음: 맑은 현악기(하프)풍 지속음 선율
-        source = np.sin(2 * np.pi * freq * t) + 0.3 * np.sin(2 * 2 * np.pi * freq * t)
+    if not is_vowel:
+        # 자음은 배음을 살짝 얹어서 명확하게 분리
+        source_signal += 0.2 * np.sin(2 * phases)
         
-    # 전체 연주 시간의 처음과 끝에만 페이드 인/아웃 적용 (중간 뚝 끊김 방지)
-    envelope = np.ones(n_samples)
-    fade_in = int(sr * 0.08)
-    fade_out = int(sr * 0.1)
-    envelope[:fade_in] = np.linspace(0, 1, fade_in)
-    envelope[-fade_out:] = np.linspace(1, 0, fade_out)
+    # 3,307 크기의 오리지널 엑기스 목소리 소스를 전체 길이에 맞춰 루프 배치 후 합성
+    extended_base = np.tile(base_waveform, int(np.ceil(total_samples / len(base_waveform))))
+    trimmed_base = extended_base[:total_samples]
     
-    return trimmed * source * envelope
+    # 소스 융합
+    glided_wave = trimmed_base * source_signal
+    
+    return glided_wave
 
 def decompose_text(text):
     double_jamo = {
@@ -80,9 +86,9 @@ def decompose_text(text):
         result.append(syllable)
     return result
 
-st.set_page_config(page_title="고급 연속음 통합 가족 TTS", layout="centered")
-st.title("🎼 가족 자/모음 동시 연속 통합 앙상블 TTS")
-st.write("초성 자음이나 중성 모음이 연속되면 소리가 끊기지 않고 롱톤으로 이어지며, 종성은 드럼 톤으로 연주됩니다.")
+st.set_page_config(page_title="곡선 음이동 가족 TTS", layout="centered")
+st.title("🎼 가족 자/모음 주파수 곡선 융합 TTS")
+st.write("각 자/모음 스펙트럼 기준에 맞춰 소리가 생성되며, 음이 변할 때 아빠의 목소리는 더욱 완만한 곡선을 그리며 미끄러지듯 이동합니다.")
 
 mom_path = "mom_voice.npy"
 dad_path = "dad_voice.npy"
@@ -95,9 +101,9 @@ for p in [mom_path, dad_path, me_path]:
     else:
         st.sidebar.error(f"❌ {p} 없음")
 
-input_text = st.text_input("연주할 문장을 입력하세요", "나는")
+input_text = st.text_input("연주할 문장을 입력하세요", "나비")
 
-if st.button("오케스트라 연주하기"):
+if st.button("곡선 선율 연주하기"):
     try:
         mom_base = np.load(mom_path)
         dad_base = np.load(dad_path)
@@ -109,101 +115,86 @@ if st.button("오케스트라 연주하기"):
         
         decomposed_data = decompose_text(input_text)
         
-        # ─── 2. 텍스트 연속성 분석 및 독립 렌더링 ───
-        # 전체 오디오 타임라인 길이를 먼저 계산
-        total_samples = 0
-        timeline_map = [] # 각 요소의 시작 시간과 타입을 기록
-        
+        # ─── 2. 전체 타임라인 맵 구성 ───
+        timeline = []
         current_time = 0.0
         for item in decomposed_data:
             if item == "SPACE":
                 current_time += space_dur
             else:
-                timeline_map.append({'type': 'char', 'start': current_time, 'data': item})
+                timeline.append({'start': current_time, 'data': item})
                 current_time += base_dur
+                
+        total_samples = int(sr * current_time)
         
-        total_audio_len = int(sr * current_time)
-        master_signal = np.zeros(total_audio_len)
+        # 주파수 타겟 배열 초기화 (초기값은 각 영역의 첫 타겟값으로 채움)
+        mom_targets = np.zeros(total_samples)
+        dad_targets = np.zeros(total_samples)
+        me_targets = np.zeros(total_samples)
+        me_active = np.zeros(total_samples) # 종성 유무 체크용
         
-        # 연속음을 묶어서 한 번에 길게 그리기 위한 탐색
-        # [초성 자음 연속성 처리]
-        visited_cho = [False] * len(timeline_map)
-        for i in range(len(timeline_map)):
-            if visited_cho[i]: continue
+        # 타임라인을 돌며 각 샘플 시점의 '목표 음(반음 수)'을 맵핑
+        for t_item in timeline:
+            start_s = int(sr * t_item['start'])
+            end_s = start_s + int(sr * base_dur)
+            item = t_item['data']
             
-            start_idx = i
-            end_idx = i
-            current_cho = timeline_map[i]['data']['초']
-            
-            # 다음 글자들의 초성이 같은지 전수 조사
-            while end_idx + 1 < len(timeline_map) and timeline_map[end_idx + 1]['data']['초'] == current_cho and current_cho:
-                end_idx += 1
+            # 엄마 초성 목표음 설정
+            if item['초'] and item['초'][0] in CONSONANT_SPECTRUM:
+                mom_targets[start_s:end_s] = CONSONANT_SPECTRUM[item['초'][0]]
                 
-            # 연속된 덩어리 길이 계산
-            for k in range(start_idx, end_idx + 1): visited_cho[k] = True
-            
-            if current_cho:
-                start_time = timeline_map[start_idx]['start']
-                duration = (end_idx - start_idx + 1) * base_dur
+            # 아빠 중성 목표음 설정
+            if item['중'] and item['중'][0] in VOWEL_SPECTRUM:
+                dad_targets[start_s:end_s] = VOWEL_SPECTRUM[item['중'][0]]
                 
-                # 통째로 긴 자음 선율 생성
-                consonant_signal = np.zeros(int(sr * duration))
-                for c in current_cho:
-                    if c in CONSONANT_SPECTRUM:
-                        semi = CONSONANT_SPECTRUM[c]
-                        consonant_signal += generate_pure_tone(mom_base, semi, duration, is_vowel=False, sr=sr)
-                
-                start_sample = int(sr * start_time)
-                master_signal[start_sample:start_sample+len(consonant_signal)] += consonant_signal * 0.7
-
-        # [중성 모음 연속성 처리]
-        visited_jung = [False] * len(timeline_map)
-        for i in range(len(timeline_map)):
-            if visited_jung[i]: continue
-            
-            start_idx = i
-            end_idx = i
-            current_jung = timeline_map[i]['data']['중']
-            
-            while end_idx + 1 < len(timeline_map) and timeline_map[end_idx + 1]['data']['중'] == current_jung and current_jung:
-                end_idx += 1
-                
-            for k in range(start_idx, end_idx + 1): visited_jung[k] = True
-            
-            if current_jung:
-                start_time = timeline_map[start_idx]['start']
-                duration = (end_idx - start_idx + 1) * base_dur
-                
-                vowel_signal = np.zeros(int(sr * duration))
-                for v in current_jung:
-                    if v in VOWEL_SPECTRUM:
-                        semi = VOWEL_SPECTRUM[v]
-                        vowel_signal += generate_pure_tone(dad_base, semi, duration, is_vowel=True, sr=sr)
-                
-                start_sample = int(sr * start_time)
-                master_signal[start_sample:start_sample+len(vowel_signal)] += vowel_signal * 1.0
-
-        # [종성 자음 처리 - 연속성 제외, 매 글자 독립 드럼 타격]
-        for i in range(len(timeline_map)):
-            item = timeline_map[i]['data']
+            # 원재 종성 설정 (드럼 타격 영역 활성화)
             if item['종']:
-                start_time = timeline_map[i]['start']
-                # 종성은 0.5초 공간의 뒷부분에 배치되거나 0.5초 전체에 타격 효과를 줌
-                drum_signal = np.zeros(int(sr * base_dur))
-                for _ in item['종']:
-                    drum_signal += generate_pure_tone(me_base, 0, base_dur, is_vowel=False, is_drum=True, sr=sr)
+                me_active[start_s:end_s] = 1.0
                 
-                start_sample = int(sr * start_time)
-                master_signal[start_sample:start_sample+len(drum_signal)] += drum_signal * 1.2
-
-        # 최종 마스터링 및 출력
+        # ─── 3. 포르타멘토(Glide) 엔진 적용 및 사운드 생성 ───
+        # 엄마 선율 생성 (자음 규칙 곡선)
+        mom_signal = generate_glided_timeline(mom_targets, mom_base, is_vowel=False, sr=sr)
+        
+        # 아빠 선율 생성 (★모음 규칙, 완만하고 중후한 곡선)
+        dad_signal = generate_glided_timeline(dad_targets, dad_base, is_vowel=True, sr=sr)
+        
+        # 원재 종성 처리 (연속음 제외, 종성 위치에서만 묵직한 드럼 타격 연출)
+        me_signal = np.zeros(total_samples)
+        t_axis = np.linspace(0, current_time, total_samples, endpoint=False)
+        for t_item in timeline:
+            item = t_item['data']
+            if item['종']:
+                start_s = int(sr * t_item['start'])
+                end_s = start_s + int(sr * base_dur)
+                dur_samples = end_s - start_s
+                
+                # 드럼 충격파 생성
+                t_local = np.linspace(0, base_dur, dur_samples, endpoint=False)
+                low_thump = np.sin(2 * np.pi * 55 * t_local) * np.exp(-35 * t_local)
+                
+                # 원재 3307 npy 소스 결합
+                extended_me = np.tile(me_base, int(np.ceil(dur_samples / len(me_base))))
+                noise_burst = extended_me[:dur_samples] * np.exp(-20 * t_local)
+                
+                me_signal[start_s:end_s] = (low_thump * 0.8) + (noise_burst * 0.3)
+        
+        # ─── 4. 최종 오케스트라 믹싱 ───
+        master_signal = (mom_signal * 0.6) + (dad_signal * 1.0) + (me_signal * 1.2)
+        
+        # 전체 시작과 끝 볼륨 정리 (클릭 노이즈 방지)
+        if len(master_signal) > int(sr * 0.1):
+            fade_len = int(sr * 0.05)
+            master_signal[:fade_len] *= np.linspace(0, 1, fade_len)
+            master_signal[-fade_len:] *= np.linspace(1, 0, fade_len)
+            
+        # 마스터링 정규화
         if np.max(np.abs(master_signal)) > 0:
-            master_signal = master_signal / np.max(np.abs(master_signal)) * 0.8
+            master_signal = master_signal / np.max(np.abs(master_signal)) * 0.85
             
         out_bio = io.BytesIO()
         sf.write(out_bio, master_signal, sr, format='WAV')
         st.audio(out_bio.getvalue())
-        st.success(f"🎵 '{input_text}' 융합 오케스트라 연주 완료!")
+        st.success("🎨 자/모음 개별 스펙트럼 및 아빠의 완만한 글라이드 연주 완료!")
         
     except Exception as e:
         st.error(f"오류가 발생했습니다: {e}")

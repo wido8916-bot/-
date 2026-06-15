@@ -4,6 +4,7 @@ import soundfile as sf
 from jamo import h2j, j2hcj
 import io
 import os
+import base64  # 🔥 자동 재생용 base64 인코딩 라이브러리 추가
 
 # 1. 고정 스펙트럼 매핑
 CONSONANT_SPECTRUM = {
@@ -17,9 +18,6 @@ VOWEL_SPECTRUM = {
 }
 
 def generate_glided_timeline(pitch_targets, base_waveform, is_vowel=False, sr=22050):
-    """
-    목소리 소스 위에서 목표 음정들 사이를 부드러운 곡선(포르타멘토)으로 연결합니다.
-    """
     total_samples = len(pitch_targets)
     if total_samples == 0:
         return np.zeros(0)
@@ -28,7 +26,6 @@ def generate_glided_timeline(pitch_targets, base_waveform, is_vowel=False, sr=22
     freq_timeline = np.zeros(total_samples)
     current_freq = base_freq * (2 ** (pitch_targets[0] / 12.0))
     
-    # 아빠(모음)는 완만하게(0.0015), 엄마(자음)는 상대적으로 빠르게(0.006) 음 이동
     gliding_speed = 0.0015 if is_vowel else 0.006
     
     for t in range(total_samples):
@@ -59,8 +56,6 @@ def decompose_text(text):
         if char == " ":
             result.append("SPACE")
             continue
-        
-        # 단독 자음 처리
         if char in 'ㄱㄴㄷㄹㅁㅂㅅㅇㅈㅊㅋㅌㅍㅎㄲㄸㅃㅆㅉ':
             decomposed = double_jamo.get(char, char)
             syllable = {'초': [d for d in decomposed], '중': [], '종': []}
@@ -81,7 +76,6 @@ def decompose_text(text):
         result.append(syllable)
     return result
 
-# ─── UI 텍스트 설정 ('연결, 화합 그리고 소리') ───
 st.set_page_config(page_title="연결, 화합 그리고 소리", layout="centered")
 st.title("🎼 연결, 화합 그리고 소리")
 
@@ -96,13 +90,9 @@ for p in [mom_path, dad_path, me_path]:
     else:
         st.sidebar.error(f"❌ {p} 없음")
 
-# 안내 문구 변경 및 엔터 감지 활성화
 input_text = st.text_input("텍스트를 자유롭게 입력하세요", "나비")
-
-# 버튼 이름 직관화 ('소리 듣기')
 trigger_play = st.button("소리 듣기")
 
-# 텍스트가 입력되었거나, '소리 듣기' 버튼이 눌렸을 때 모두 실행되도록 트리거 설정
 if input_text or trigger_play:
     try:
         mom_base = np.load(mom_path)
@@ -115,7 +105,6 @@ if input_text or trigger_play:
         
         decomposed_data = decompose_text(input_text)
         
-        # ─── 타임라인 구성 ───
         timeline = []
         current_time = 0.0
         for item in decomposed_data:
@@ -144,12 +133,10 @@ if input_text or trigger_play:
                     dad_targets[start_s:end_s] = VOWEL_SPECTRUM[item['중'][0]]
                     dad_active[start_s:end_s] = 1.0
                     
-            # 엔진 가동 및 출력 계산
             mom_signal = generate_glided_timeline(mom_targets, mom_base, is_vowel=False, sr=sr)
             dad_signal = generate_glided_timeline(dad_targets, dad_base, is_vowel=True, sr=sr)
             dad_signal = dad_signal * dad_active
             
-            # 종성(원재 - 드럼) 쿵. 쿵. 쿵. 스타카토 렌더링
             me_signal = np.zeros(total_samples)
             for t_item in timeline:
                 item = t_item['data']
@@ -171,7 +158,6 @@ if input_text or trigger_play:
                     
                     me_signal[start_s:start_s+drum_samples] = drum_wave
             
-            # 최종 마스터 믹싱
             master_signal = (mom_signal * 0.6) + (dad_signal * 1.0) + (me_signal * 1.4)
             
             if len(master_signal) > int(sr * 0.1):
@@ -184,10 +170,23 @@ if input_text or trigger_play:
                 
             out_bio = io.BytesIO()
             sf.write(out_bio, master_signal, sr, format='WAV')
+            audio_bytes = out_bio.getvalue()
             
-            # 오디오 플레이어 노출 및 자동 재생 피드백
-            st.audio(out_bio.getvalue())
-            st.success("✨ 연주가 준비되었습니다.")
+            # ─── 🔥 [핵심 변화] HTML5 강제 자동 재생(Autoplay) 코드 ───
+            # 생성된 오디오 바이너리를 base64 문자열로 인코딩합니다.
+            b64_audio = base64.b64encode(audio_bytes).decode()
+            
+            # 브라우저에 오디오 플레이어를 숨긴 채로 생성 즉시 autoplay 하도록 HTML 주입
+            audio_html = f"""
+                <audio autoplay>
+                    <source src="data:audio/wav;base64,{b64_audio}" type="audio/wav">
+                </audio>
+            """
+            st.components.v1.html(audio_html, height=0) # 화면을 차지하지 않게 높이 0으로 설정
+            
+            # 시각적 확인을 위해 일반 플레이어도 하단에 띄워줍니다.
+            st.audio(audio_bytes)
+            st.success("✨ 소리가 자동으로 재생됩니다.")
             
     except Exception as e:
         st.error(f"오류가 발생했습니다: {e}")

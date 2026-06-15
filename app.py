@@ -60,7 +60,7 @@ def decompose_text(text):
             result.append("SPACE")
             continue
         
-        # 단독 자음 처리용 예외문
+        # 단독 자음 처리
         if char in 'ㄱㄴㄷㄹㅁㅂㅅㅇㅈㅊㅋㅌㅍㅎㄲㄸㅃㅆㅉ':
             decomposed = double_jamo.get(char, char)
             syllable = {'초': [d for d in decomposed], '중': [], '종': []}
@@ -81,8 +81,9 @@ def decompose_text(text):
         result.append(syllable)
     return result
 
-st.set_page_config(page_title="곡선 음이동 가족 TTS", layout="centered")
-st.title("🎼 가족 자/모음 주파수 곡선 융합 TTS")
+# ─── UI 텍스트 설정 ('연결, 화합 그리고 소리') ───
+st.set_page_config(page_title="연결, 화합 그리고 소리", layout="centered")
+st.title("🎼 연결, 화합 그리고 소리")
 
 mom_path = "mom_voice.npy"
 dad_path = "dad_voice.npy"
@@ -95,9 +96,14 @@ for p in [mom_path, dad_path, me_path]:
     else:
         st.sidebar.error(f"❌ {p} 없음")
 
-input_text = st.text_input("연주할 문장 또는 자음을 입력하세요", "ㅋㅋㅋ")
+# 안내 문구 변경 및 엔터 감지 활성화
+input_text = st.text_input("텍스트를 자유롭게 입력하세요", "나비")
 
-if st.button("곡선 선율 연주하기"):
+# 버튼 이름 직관화 ('소리 듣기')
+trigger_play = st.button("소리 듣기")
+
+# 텍스트가 입력되었거나, '소리 듣기' 버튼이 눌렸을 때 모두 실행되도록 트리거 설정
+if input_text or trigger_play:
     try:
         mom_base = np.load(mom_path)
         dad_base = np.load(dad_path)
@@ -109,7 +115,7 @@ if st.button("곡선 선율 연주하기"):
         
         decomposed_data = decompose_text(input_text)
         
-        # ─── 2. 전체 타임라인 구성 ───
+        # ─── 타임라인 구성 ───
         timeline = []
         current_time = 0.0
         for item in decomposed_data:
@@ -121,70 +127,67 @@ if st.button("곡선 선율 연주하기"):
                 
         total_samples = int(sr * current_time)
         
-        mom_targets = np.zeros(total_samples)
-        dad_targets = np.zeros(total_samples)
-        dad_active = np.zeros(total_samples) # 모음 존재 여부 마스킹
-        
-        for t_item in timeline:
-            start_s = int(sr * t_item['start'])
-            end_s = start_s + int(sr * base_dur)
-            item = t_item['data']
+        if total_samples > 0:
+            mom_targets = np.zeros(total_samples)
+            dad_targets = np.zeros(total_samples)
+            dad_active = np.zeros(total_samples)
             
-            if item['초'] and item['초'][0] in CONSONANT_SPECTRUM:
-                mom_targets[start_s:end_s] = CONSONANT_SPECTRUM[item['초'][0]]
-                
-            if item['중'] and item['중'][0] in VOWEL_SPECTRUM:
-                dad_targets[start_s:end_s] = VOWEL_SPECTRUM[item['중'][0]]
-                dad_active[start_s:end_s] = 1.0 # 모음이 있는 글자만 1.0 활성화
-                
-        # ─── 3. 엔진 가동 및 출력 계산 ───
-        mom_signal = generate_glided_timeline(mom_targets, mom_base, is_vowel=False, sr=sr)
-        dad_signal = generate_glided_timeline(dad_targets, dad_base, is_vowel=True, sr=sr)
-        
-        # 모음이 없는 자음 독주 구간에서는 아빠 소리를 완전히 소거
-        dad_signal = dad_signal * dad_active
-        
-        # 종성(원재 - 드럼): 쿵. 쿵. 쿵. 확실하게 끊어치는 스탁카토 렌더링
-        me_signal = np.zeros(total_samples)
-        for t_item in timeline:
-            item = t_item['data']
-            # 모음이 있고 종성(받침)이 존재할 때만 드럼 작동
-            if item['중'] and item['종']:
+            for t_item in timeline:
                 start_s = int(sr * t_item['start'])
+                end_s = start_s + int(sr * base_dur)
+                item = t_item['data']
                 
-                # 0.5초 중 오직 0.15초만 타격하고 뒤는 무음으로 칼같이 커트
-                drum_dur = 0.15 
-                drum_samples = int(sr * drum_dur)
-                
-                t_local = np.linspace(0, drum_dur, drum_samples, endpoint=False)
-                low_thump = np.sin(2 * np.pi * 60 * t_local) * np.exp(-40 * t_local) # 감쇄 속도를 높임
-                
-                extended_me = np.tile(me_base, int(np.ceil(drum_samples / len(me_base))))
-                noise_burst = extended_me[:drum_samples] * np.exp(-30 * t_local)
-                
-                # 0.15초 타격 사운드 윈도우 페이딩
-                drum_wave = (low_thump * 0.9) + (noise_burst * 0.2)
-                fade = int(sr * 0.02)
-                if len(drum_wave) > fade:
-                    drum_wave[-fade:] *= np.linspace(1, 0, fade)
-                
-                me_signal[start_s:start_s+drum_samples] = drum_wave
-        
-        # ─── 4. 최종 마스터 믹싱 ───
-        master_signal = (mom_signal * 0.6) + (dad_signal * 1.0) + (me_signal * 1.4)
-        
-        if len(master_signal) > int(sr * 0.1):
-            fade_len = int(sr * 0.05)
-            master_signal[:fade_len] *= np.linspace(0, 1, fade_len)
-            master_signal[-fade_len:] *= np.linspace(1, 0, fade_len)
+                if item['초'] and item['초'][0] in CONSONANT_SPECTRUM:
+                    mom_targets[start_s:end_s] = CONSONANT_SPECTRUM[item['초'][0]]
+                    
+                if item['중'] and item['중'][0] in VOWEL_SPECTRUM:
+                    dad_targets[start_s:end_s] = VOWEL_SPECTRUM[item['중'][0]]
+                    dad_active[start_s:end_s] = 1.0
+                    
+            # 엔진 가동 및 출력 계산
+            mom_signal = generate_glided_timeline(mom_targets, mom_base, is_vowel=False, sr=sr)
+            dad_signal = generate_glided_timeline(dad_targets, dad_base, is_vowel=True, sr=sr)
+            dad_signal = dad_signal * dad_active
             
-        if np.max(np.abs(master_signal)) > 0:
-            master_signal = master_signal / np.max(np.abs(master_signal)) * 0.85
+            # 종성(원재 - 드럼) 쿵. 쿵. 쿵. 스타카토 렌더링
+            me_signal = np.zeros(total_samples)
+            for t_item in timeline:
+                item = t_item['data']
+                if item['중'] and item['종']:
+                    start_s = int(sr * t_item['start'])
+                    drum_dur = 0.15 
+                    drum_samples = int(sr * drum_dur)
+                    
+                    t_local = np.linspace(0, drum_dur, drum_samples, endpoint=False)
+                    low_thump = np.sin(2 * np.pi * 60 * t_local) * np.exp(-40 * t_local)
+                    
+                    extended_me = np.tile(me_base, int(np.ceil(drum_samples / len(me_base))))
+                    noise_burst = extended_me[:drum_samples] * np.exp(-30 * t_local)
+                    
+                    drum_wave = (low_thump * 0.9) + (noise_burst * 0.2)
+                    fade = int(sr * 0.02)
+                    if len(drum_wave) > fade:
+                        drum_wave[-fade:] *= np.linspace(1, 0, fade)
+                    
+                    me_signal[start_s:start_s+drum_samples] = drum_wave
             
-        out_bio = io.BytesIO()
-        sf.write(out_bio, master_signal, sr, format='WAV')
-        st.audio(out_bio.getvalue())
-        st.success("🎨 종성 타격감 강화 및 자음 독주 시스템 적용 완료!")
-        
+            # 최종 마스터 믹싱
+            master_signal = (mom_signal * 0.6) + (dad_signal * 1.0) + (me_signal * 1.4)
+            
+            if len(master_signal) > int(sr * 0.1):
+                fade_len = int(sr * 0.05)
+                master_signal[:fade_len] *= np.linspace(0, 1, fade_len)
+                master_signal[-fade_len:] *= np.linspace(1, 0, fade_len)
+                
+            if np.max(np.abs(master_signal)) > 0:
+                master_signal = master_signal / np.max(np.abs(master_signal)) * 0.85
+                
+            out_bio = io.BytesIO()
+            sf.write(out_bio, master_signal, sr, format='WAV')
+            
+            # 오디오 플레이어 노출 및 자동 재생 피드백
+            st.audio(out_bio.getvalue())
+            st.success("✨ 연주가 준비되었습니다.")
+            
     except Exception as e:
         st.error(f"오류가 발생했습니다: {e}")
